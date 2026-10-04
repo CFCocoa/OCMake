@@ -1,0 +1,120 @@
+# Reusable workflow for a repository that describes its EFI with OCMake.
+#
+#   jobs:
+#     efi:
+#       uses: NSCocoa/OCMake/.github/workflows/build-efi.yml@main
+#       with:
+#         source-dir: .
+#
+# It builds, validates and packages; it never installs anything anywhere. The caller's
+# repository is what gets checked out, and its CMakeLists.txt is responsible for bringing
+# OCMake in (FetchContent, a submodule, or -DOCMAKE_ROOT).
+name: Build EFI
+
+on:
+  workflow_call:
+    inputs:
+      source-dir:
+        description: Directory holding the project's CMakeLists.txt.
+        type: string
+        default: '.'
+      build-type:
+        description: Release or Debug. Selects the OpenCore, kext and driver variant too.
+        type: string
+        default: Release
+      os:
+        description: Runner to build on. The EFI is identical whichever you pick.
+        type: string
+        default: ubuntu-latest
+      cmake-version:
+        type: string
+        default: latest
+      python-version:
+        type: string
+        default: '3.x'
+      validate:
+        description: Run ocvalidate and OCMake's own checks after building.
+        type: boolean
+        default: true
+      artifact-name:
+        description: Name of the uploaded artifact. Empty uploads nothing.
+        type: string
+        default: EFI
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.os }}
+    env:
+      # Lifts the GitHub API limit from 60 requests/hour to 1000. Only used on a cold
+      # lockfile: a committed ocmake.lock means resolution is skipped entirely.
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: ${{ inputs.cmake-version }}
+
+      - name: Install iasl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y acpica-tools
+
+      - name: Locate the OCMake cache
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "OCMAKE_CACHE=$LOCALAPPDATA/ocmake" >> "$GITHUB_ENV"
+          else
+            echo "OCMAKE_CACHE=$HOME/.cache/ocmake" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OCMAKE_CACHE }}
+          key: ocmake-${{ runner.os }}-${{ hashFiles('**/ocmake.lock') }}
+          restore-keys: ocmake-${{ runner.os }}-
+
+      - name: Configure
+        run: >
+          cmake -S "${{ inputs.source-dir }}" -B "${{ inputs.source-dir }}/build" -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ inputs.build-type }}
+
+      - name: Build
+        run: cmake --build "${{ inputs.source-dir }}/build"
+
+      - name: Validate
+        if: inputs.validate
+        run: ctest --test-dir "${{ inputs.source-dir }}/build" --output-on-failure
+
+      # A committed lockfile is supposed to make builds reproducible. If configuring
+      # rewrote it, something was not pinned, and the artifact is not what the repository
+      # says it is -- so say so rather than uploading it quietly.
+      - name: Check the lockfile did not move
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain -- '*ocmake.lock')" ]; then
+            echo "::error::ocmake.lock changed during the build; commit the updated lock."
+            git --no-pager diff -- '*ocmake.lock'
+            exit 1
+          fi
+
+      - name: Package
+        if: inputs.artifact-name != ''
+        run: >
+          cpack --config "${{ inputs.source-dir }}/build/CPackConfig.cmake"
+          -B "${{ inputs.source-dir }}/build"
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.artifact-name != ''
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.source-dir }}/build/*.zip
+          if-no-files-found: error

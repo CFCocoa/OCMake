@@ -1,0 +1,93 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/dist/${presetName}"
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release",
+      "description": "Release OpenCore, kexts and drivers. The EFI you boot.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug",
+      "description": "DEBUG builds of OpenCore, every kext and the drivers, plus any CONFIG Debug edits. Builds alongside release; both variants stay pinned in ocmake.lock.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "offline",
+      "inherits": "base",
+      "displayName": "Release (offline)",
+      "description": "Release with no network access at all. Fails if ocmake.lock or the download cache is incomplete, so it is the check that a fresh clone can build.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OC_OFFLINE": "ON"
+      }
+    },
+    {
+      "name": "update",
+      "inherits": "base",
+      "displayName": "Release (re-resolve)",
+      "description": "Ignores ocmake.lock and re-resolves every pinned item, rewriting the lock. Use after bumping a version or to refresh VERSION latest.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OC_UPDATE": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "release",  "configurePreset": "release",  "displayName": "Release" },
+    { "name": "debug",    "configurePreset": "debug",    "displayName": "Debug" },
+    { "name": "offline",  "configurePreset": "offline",  "displayName": "Release (offline)" },
+    { "name": "update",   "configurePreset": "update",   "displayName": "Release (re-resolve)" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "displayName": "Validate release",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "ignore" }
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "displayName": "Validate debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "ignore" }
+    }
+  ],
+
+  "workflowPresets": [
+    {
+      "name": "release",
+      "displayName": "Build and validate the release EFI",
+      "steps": [
+        { "type": "configure", "name": "release" },
+        { "type": "build",     "name": "release" },
+        { "type": "test",      "name": "release" }
+      ]
+    },
+    {
+      "name": "debug",
+      "displayName": "Build and validate the debug EFI",
+      "steps": [
+        { "type": "configure", "name": "debug" },
+        { "type": "build",     "name": "debug" },
+        { "type": "test",      "name": "debug" }
+      ]
+    }
+  ]
+}

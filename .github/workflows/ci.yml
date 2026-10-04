@@ -1,0 +1,147 @@
+# OCMake's own test suite, across the platforms and CMake versions it claims to support.
+#
+# The matrix is written out rather than generated from axes: the interesting legs are the
+# floor (CMake 3.25 + Python 3.9, the versions README.md promises) and current, and a
+# full cross-product would add legs that test nothing new.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} · CMake ${{ matrix.cmake }} · ${{ matrix.generator }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest,  cmake: '3.25.3', python: '3.9', generator: Ninja}
+          - {os: ubuntu-latest,  cmake: latest,   python: '3.x', generator: Ninja}
+          # One Makefiles leg: the generator difference is second-granularity mtimes, not
+          # anything platform-specific, so it does not need repeating on every OS.
+          - {os: ubuntu-latest,  cmake: latest,   python: '3.x', generator: 'Unix Makefiles'}
+          - {os: macos-latest,   cmake: '3.25.3', python: '3.9', generator: Ninja}
+          - {os: macos-latest,   cmake: latest,   python: '3.x', generator: Ninja}
+          - {os: windows-latest, cmake: '3.25.3', python: '3.9', generator: Ninja}
+          - {os: windows-latest, cmake: latest,   python: '3.x', generator: Ninja}
+    env:
+      # 1000 requests/hour instead of the anonymous 60, which several tests would exhaust.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Third-party, and pinned to a tag rather than a SHA for readability. A consumer
+      # repo doing this for real should pin the SHA.
+      - uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: ${{ matrix.cmake }}
+
+      # macOS and Windows fetch a pinned iasl themselves (see cmake/OCACPI.cmake); no one
+      # publishes a Linux binary, so the distro package is the only route there.
+      - name: Install iasl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y acpica-tools
+
+      # So the suite's SECUREBOOT branch runs rather than skipping. The examples job
+      # deliberately does *not* do this, which is what exercises OCMake provisioning the
+      # environment itself.
+      - name: Install cryptography
+        run: python -m pip install --disable-pip-version-check cryptography
+
+      - name: Locate the OCMake cache
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "OCMAKE_CACHE=$LOCALAPPDATA/ocmake" >> "$GITHUB_ENV"
+          else
+            echo "OCMAKE_CACHE=$HOME/.cache/ocmake" >> "$GITHUB_ENV"
+          fi
+
+      # Archives are immutable per URL, so a stale entry is never wrong -- only missing.
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OCMAKE_CACHE }}
+          key: ocmake-${{ runner.os }}-${{ hashFiles('examples/*/ocmake.lock') }}
+          restore-keys: ocmake-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake -S . -B build -G "${{ matrix.generator }}"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 600
+
+  examples:
+    name: example ${{ matrix.example }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        example: [minimal, b760i-aorus-pro, laptop-template, multi-efi, multi-efi-flat]
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: lukka/get-cmake@latest
+      - name: Install iasl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y acpica-tools
+      - name: Locate the OCMake cache
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "OCMAKE_CACHE=$LOCALAPPDATA/ocmake" >> "$GITHUB_ENV"
+          else
+            echo "OCMAKE_CACHE=$HOME/.cache/ocmake" >> "$GITHUB_ENV"
+          fi
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OCMAKE_CACHE }}
+          key: ocmake-${{ runner.os }}-${{ hashFiles('examples/*/ocmake.lock') }}
+          restore-keys: ocmake-${{ runner.os }}-
+
+      # secrets.plist is gitignored by design, and its .example template being committed
+      # is what makes a missing one a hard error. Creating it here is the same `cp` the
+      # error message tells a human to run.
+      # Each EFI in a multi-EFI project keeps its own, hence the find rather than a
+      # single cp. secrets.plist is gitignored by design; its committed .example template
+      # is what makes a missing one a hard error.
+      - name: Provide machine identifiers
+        shell: bash
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          find . -name secrets.plist.example -exec sh -c 'cp "$1" "${1%.example}"' _ {} \;
+
+      - name: Build and validate
+        working-directory: examples/${{ matrix.example }}
+        run: cmake --workflow --preset release
+
+      - name: Package
+        working-directory: examples/${{ matrix.example }}
+        run: cpack --config build/release/CPackConfig.cmake -B build/release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.example }}-EFI-${{ matrix.os }}
+          path: examples/${{ matrix.example }}/build/release/*.zip
+          if-no-files-found: error

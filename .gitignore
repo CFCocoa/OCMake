@@ -1,0 +1,10 @@
+build/
+dist/
+.DS_Store
+
+# Machine-specific identifiers: never commit these (see examples/*/secrets.plist.example)
+secrets.plist
+
+# Local fixture: the upstream EFI this example reproduces. Kept out of the repo because
+# 33 MB of it is downloadable kexts -- exactly the clutter OCMake exists to remove.
+examples/b760i-aorus-pro/reference-EFI/
